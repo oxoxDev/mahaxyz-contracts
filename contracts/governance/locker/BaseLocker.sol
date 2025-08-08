@@ -21,6 +21,7 @@ import {
 } from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 /**
  * @title Voting Escrow
@@ -28,7 +29,7 @@ import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
  * @notice Votes have a weight depending on time, so that users are
  * committed to the future of (whatever they are voting for)
  */
-abstract contract BaseLocker is ReentrancyGuardUpgradeable, ERC721EnumerableUpgradeable, ILocker {
+abstract contract BaseLocker is ReentrancyGuardUpgradeable, ERC721EnumerableUpgradeable, ILocker, OwnableUpgradeable {
   uint256 internal WEEK;
   uint256 internal MAXTIME;
   uint256 public supply;
@@ -51,6 +52,7 @@ abstract contract BaseLocker is ReentrancyGuardUpgradeable, ERC721EnumerableUpgr
   ) internal {
     __ERC721_init(_name, _symbol);
     __ReentrancyGuard_init();
+    __Ownable_init(msg.sender);
     version = "1.0.0";
     decimals = 18;
     WEEK = 1 weeks;
@@ -299,4 +301,25 @@ abstract contract BaseLocker is ReentrancyGuardUpgradeable, ERC721EnumerableUpgr
     // todo
     return "";
   }
+
+  function migrateLock(
+    uint256 _value,
+    uint256 _duration,
+    address _who,
+    bool _stakeNFT
+  ) public onlyOwner returns (uint256) {
+    return _createLock(_value, _duration, _who, _stakeNFT);
+  }
+
+  function migrateLocks(
+    uint256[] memory _value,
+    uint256[] memory _duration,
+    address[] memory _who,
+    bool[] memory _stakeNFT
+  ) external onlyOwner {
+    for (uint256 i = 0; i < _value.length; i++) {
+      migrateLock(_value[i], _duration[i], _who[i], _stakeNFT[i]);
+    }
+  }
+  
 }
