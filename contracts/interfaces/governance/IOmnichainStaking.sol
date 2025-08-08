@@ -70,6 +70,12 @@ interface IOmnichainStaking is IMultiTokenRewards, IVotes {
   function getLockedNftDetails(address _user) external view returns (uint256[] memory, ILocker.LockedBalance[] memory);
 
   /**
+   * @notice Sets the locker contract.
+   * @param _locker The address of the locker contract.
+   */
+  function setLocker(ILocker _locker) external;
+
+  /**
    * @notice Receives an ERC721 token from the lockers and grants voting power accordingly.
    * @param from The address sending the ERC721 token.
    * @param tokenId The ID of the ERC721 token.

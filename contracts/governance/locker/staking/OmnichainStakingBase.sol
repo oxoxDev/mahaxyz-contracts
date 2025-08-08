@@ -130,6 +130,11 @@ abstract contract OmnichainStakingBase is
   }
 
   /// @inheritdoc IOmnichainStaking
+  function setLocker(ILocker _locker) external onlyOwner {
+    locker = _locker;
+  }
+
+  /// @inheritdoc IOmnichainStaking
   function getLockedNftDetails(address _user) external view returns (uint256[] memory, ILocker.LockedBalance[] memory) {
     uint256 tokenIdsLength = lockedTokenIdNfts[_user].length;
     uint256[] memory lockedTokenIds = lockedTokenIdNfts[_user];
