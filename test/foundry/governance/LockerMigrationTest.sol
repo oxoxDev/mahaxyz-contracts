@@ -45,12 +45,10 @@ contract LockerMigrationTest is Test {
     
     // Deployed contract addresses on Base mainnet
     address constant OLD_LOCKER_ADDRESS = 0xDAe7CD5AA310C66c555543886DFcD454896Ae2C0;
-    address constant STAKING_ADDRESS = 0xfD487AC8de6520263D57bb41253682874Dc0276E;
     address constant MAHA_TOKEN = 0x554bba833518793056CF105E66aBEA330672c0dE;
     address constant MAHA_OWNER = 0x7202136d70026DA33628dD3f3eFccb43F62a2469;
-    // ProxyAdmin contract that is the actual admin of the staking proxy on Base
-    address constant PROXY_ADMIN = 0xF5dfbB44ED2bfe32953c8237eC03B5AE20a089c4;
-    address constant STAKING_OWNER = 0x7202136d70026DA33628dD3f3eFccb43F62a2469;
+    address constant WETH_BASE = 0x4200000000000000000000000000000000000006;
+    uint256 constant REWARD_DURATION = 86400 * 7; // 7 Days
     
     // Contract instances
     LockerToken oldLocker;
@@ -63,15 +61,28 @@ contract LockerMigrationTest is Test {
     
     // Migration data structures
     struct MigrationData {
+        uint256[] tokenIds;
         uint256[] values;
-        uint256[] durations;
+        uint256[] starts;
+        uint256[] ends;
         address[] owners;
         bool[] stakeNFTs;
     }
     
+    // Store old locker data for comparison
+    struct OldLockData {
+        uint256 tokenId;
+        uint256 amount;
+        uint256 start;
+        uint256 end;
+        uint256 power;
+        address owner;
+        bool isStaked;
+    }
+    
     function setUp() public {
         // Create Base mainnet fork
-        baseFork = vm.createFork("https://mainnet.base.org", 25296075);
+        baseFork = vm.createFork("https://mainnet.base.org");
         vm.selectFork(baseFork);
 
         // Set up test actors
@@ -79,7 +90,6 @@ contract LockerMigrationTest is Test {
         
         // Connect to deployed contracts
         oldLocker = LockerToken(OLD_LOCKER_ADDRESS);
-        staking = OmnichainStakingToken(STAKING_ADDRESS);
 
         // Deploy mock MAHA token for testing
         underlyingToken = new MockERC20("MAHA", "MAHA", 18);
@@ -88,40 +98,38 @@ contract LockerMigrationTest is Test {
         vm.prank(deployer);
         newLocker = new LockerToken();
 
-        // Deploy new staking implementation
-        OmnichainStakingToken newStakingImpl = new OmnichainStakingToken();
-
-        IProxyAdmin proxyAdmin = IProxyAdmin(PROXY_ADMIN);
-
-        address proxyAdminOwner = proxyAdmin.owner();
-
-        // The staking contract uses MAHAProxy, so we need to call upgradeToAndCall from the proxy admin
-        vm.prank(proxyAdminOwner);
-        proxyAdmin.upgradeAndCall(
-            ITransparentUpgradeableProxy(STAKING_ADDRESS),
-            address(newStakingImpl),
-            ""
-        );
+        // Deploy new staking
+        vm.prank(deployer);
+        staking = new OmnichainStakingToken();
 
         // Initialize new locker
         vm.prank(deployer);
         newLocker.initialize(
             address(underlyingToken),
-            STAKING_ADDRESS
+            address(staking)
         );
 
-        address stakingOwner = staking.owner();
-        vm.prank(stakingOwner);
-        staking.setLocker(ILocker(address(newLocker)));
+        // Initialize new staking
+        address[] memory rewardTokens = new address[](2);
+        rewardTokens[0] = address(underlyingToken);
+        rewardTokens[1] = WETH_BASE;
         
+        vm.prank(deployer);
+        staking.initialize(
+            address(newLocker),
+            address(WETH_BASE),
+            rewardTokens,
+            REWARD_DURATION,
+            deployer,
+            deployer
+        );
+
         // Label contracts for better debugging
         vm.label(OLD_LOCKER_ADDRESS, "OldLocker");
-        vm.label(STAKING_ADDRESS, "Staking");
+        vm.label(address(staking), "Staking");
         vm.label(address(newLocker), "NewLocker");
         vm.label(MAHA_TOKEN, "MAHA");
         vm.label(MAHA_OWNER, "MAHA Owner");
-        vm.label(PROXY_ADMIN, "ProxyAdmin");
-        vm.label(STAKING_OWNER, "Staking Owner");
         vm.label(deployer, "Deployer"); 
     }
 
@@ -130,75 +138,113 @@ contract LockerMigrationTest is Test {
      */
     function testFullMigrationProcess() public {
         // Prepare migration data by scanning the old locker
-        MigrationData memory migrationData = _prepareMigrationData();
+        (MigrationData memory migrationData, OldLockData[] memory oldLockData) = _prepareMigrationData();
 
         // Approve once for the total migration to avoid per-iteration allowance overwrites
         vm.startPrank(deployer);
-        underlyingToken.approve(address(newLocker), type(uint256).max);
 
         // Execute migration
-        newLocker.migrateLocks(migrationData.values, migrationData.durations, migrationData.owners, migrationData.stakeNFTs);
+        newLocker.migrateLocks(migrationData.tokenIds, migrationData.values, migrationData.starts, migrationData.ends, migrationData.owners, migrationData.stakeNFTs);
         vm.stopPrank();
 
         // Verify migration results
-        _verifyMigrationResults(migrationData);
+        _verifyMigrationResults(migrationData, oldLockData);
     }
     
     // ============ Helper Functions ============
 
     /**
-     * @notice Prepare migration data by scanning the old locker (simplified version)
+     * @notice Prepare migration data with token ids by scanning the old locker (simplified version)
      */
-    function _prepareMigrationData() internal returns (MigrationData memory) {
+    function _prepareMigrationData() internal returns (MigrationData memory, OldLockData[] memory) {
         uint256 validTokenCount = 10;
-        
+
+        uint256[] memory tokenIds = new uint256[](validTokenCount);
         uint256[] memory values = new uint256[](validTokenCount);
-        uint256[] memory durations = new uint256[](validTokenCount);
+        uint256[] memory starts = new uint256[](validTokenCount);
+        uint256[] memory ends = new uint256[](validTokenCount);
         address[] memory owners = new address[](validTokenCount);
         bool[] memory stakeNFTs = new bool[](validTokenCount);
+        
+        OldLockData[] memory oldLockData = new OldLockData[](validTokenCount);
 
         for (uint256 tokenIdLoop = 1; tokenIdLoop <= validTokenCount; tokenIdLoop++) {
-
             ILocker.LockedBalance memory lockedBalance = oldLocker.locked(tokenIdLoop);
-            address actualOwner = oldLocker.ownerOf(tokenIdLoop);
+            address nftOwner = oldLocker.ownerOf(tokenIdLoop);
+            address actualOwner = nftOwner;
             bool shouldStake = false;
 
-            if (actualOwner == STAKING_ADDRESS) {
+            // Check if token is staked in old staking contract
+            if (nftOwner == address(staking)) {
                 actualOwner = staking.lockedByToken(tokenIdLoop);
                 shouldStake = true;
             }
 
-            values[tokenIdLoop-1] = lockedBalance.amount;
-            
-            uint256 remaining = lockedBalance.end - block.timestamp;
-          
-            require(remaining > 0, "lock expired");
-            durations[tokenIdLoop-1] = remaining;
+            // Store old lock data for verification
+            oldLockData[tokenIdLoop-1] = OldLockData({
+                tokenId: tokenIdLoop,
+                amount: lockedBalance.amount,
+                start: lockedBalance.start,
+                end: lockedBalance.end,
+                power: lockedBalance.power,
+                owner: actualOwner,
+                isStaked: shouldStake
+            });
 
+            // Prepare migration data
+            tokenIds[tokenIdLoop-1] = tokenIdLoop;
+            values[tokenIdLoop-1] = lockedBalance.amount;
+            starts[tokenIdLoop-1] = lockedBalance.start;
+            ends[tokenIdLoop-1] = lockedBalance.end;
             owners[tokenIdLoop-1] = actualOwner;
             stakeNFTs[tokenIdLoop-1] = shouldStake;
 
-            //mint MAHA to the owner
+            // Mint MAHA tokens to deployer for migration
             vm.prank(MAHA_OWNER);
             underlyingToken.mint(deployer, lockedBalance.amount);
-            
         }   
         
-        return MigrationData(values, durations, owners, stakeNFTs);
+        return (MigrationData(tokenIds, values, starts, ends, owners, stakeNFTs), oldLockData);
     }
     
     
     /**
-     * @notice Verify migration results
+     * @notice Verify migration results - all locked details must match the old ones
      */
-    function _verifyMigrationResults(MigrationData memory data) internal view {
-        
+    function _verifyMigrationResults(MigrationData memory data, OldLockData[] memory oldData) internal view {
         for (uint256 i = 0; i < data.values.length; i++) {
-            uint256 newTokenId = i + 1;
+            uint256 newTokenId = data.tokenIds[i];
+            OldLockData memory oldLock = oldData[i];
+            
+            // Get new lock data
             ILocker.LockedBalance memory newLock = newLocker.locked(newTokenId);
             
-            assertEq(newLock.amount, data.values[i], "Amount should match");
-            assertApproxEqAbs(newLock.end - newLock.start, data.durations[i], 1 weeks, "Duration should roughly match");
+            // Verify amount matches exactly
+            assertEq(newLock.amount, oldLock.amount, "Amount must match");
+            
+            // Verify start time matches exactly
+            assertEq(newLock.start, oldLock.start, "Start time must match");
+            
+            // Verify end time matches exactly
+            assertEq(newLock.end, oldLock.end, "End time must match");
+            
+            // Verify power matches exactly
+            assertEq(newLock.power, oldLock.power, "Power must match");
+            
+            // Verify ownership
+            if (oldLock.isStaked) {
+                // If originally staked, NFT should be owned by new staking contract
+                address nftOwner = newLocker.ownerOf(newTokenId);
+                assertEq(nftOwner, address(staking), "Staked NFT should be owned by staking contract");
+                
+                // And the actual owner should be mapped in the staking contract
+                address stakingOwner = staking.lockedByToken(newTokenId);
+                assertEq(stakingOwner, oldLock.owner, "Staking owner must match");
+            } else {
+                // If not staked, NFT should be owned directly by the user
+                address nftOwner = newLocker.ownerOf(newTokenId);
+                assertEq(nftOwner, oldLock.owner, "Direct NFT owner must match");
+            }
         }
     }
 } 
