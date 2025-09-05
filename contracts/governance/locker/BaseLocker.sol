@@ -303,22 +303,45 @@ abstract contract BaseLocker is ReentrancyGuardUpgradeable, ERC721EnumerableUpgr
   }
 
   function migrateLock(
+    uint256 _tokenId,
     uint256 _value,
-    uint256 _duration,
+    uint256 _start,
+    uint256 _end,
     address _who,
     bool _stakeNFT
   ) public onlyOwner returns (uint256) {
-    return _createLock(_value, _duration, _who, _stakeNFT);
+    require(_value > 0, "value = 0");
+    require(_end > _start && _start > 0, "Invalid duration");
+
+    tokenId = _tokenId;
+    supply += _value;
+    LockedBalance memory lock = _locked[_tokenId];
+    lock.amount += _value;
+    lock.end = _end;
+    lock.start = _start;
+    lock.power = _calculatePower(lock);
+    _locked[_tokenId] = lock;
+
+    if (_stakeNFT) {
+      _mint(address(this), _tokenId);
+      bytes memory data = abi.encode(_stakeNFT, _who, _end-_start);
+      this.safeTransferFrom(address(this), address(staking), _tokenId, data);
+    } else {
+      _mint(_who, _tokenId);
+    }
+    return _tokenId;
   }
 
   function migrateLocks(
+    uint256[] memory _tokenId,
     uint256[] memory _value,
-    uint256[] memory _duration,
+    uint256[] memory _start,
+    uint256[] memory _end,
     address[] memory _who,
     bool[] memory _stakeNFT
   ) external onlyOwner {
     for (uint256 i = 0; i < _value.length; i++) {
-      migrateLock(_value[i], _duration[i], _who[i], _stakeNFT[i]);
+      migrateLock(_tokenId[i], _value[i], _start[i], _end[i], _who[i], _stakeNFT[i]);
     }
   }
   
